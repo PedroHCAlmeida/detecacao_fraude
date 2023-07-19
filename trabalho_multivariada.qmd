@@ -1,0 +1,544 @@
+---
+title: "Trabalho Multivariada"
+format: 
+  html:
+    self-contained: true
+    code-fold: true
+editor: visual
+bibliography: references.bib
+---
+
+```{r}
+#| include: false
+knitr::opts_chunk$set(warning = F, message = F)
+```
+
+
+```{r}
+#| echo: false
+library(discrim)
+library(tidyverse)
+library(tidymodels)
+```
+
+# Introdução
+
+# Base de dados Escolhida
+
+A base de dados escolhida para o trabalho pode ser encontrada neste [link](). O conjunto de conjuntos de dados de Fraude de Conta Bancária (BAF) foi publicado no **NeurIPS 2022** pela **Universidade do Porto**, e compreende um total de 6 diferentes conjuntos de dados tabulares sintéticos de fraude em conta bancária. O BAF é um banco de testes realista, completo e robusto, baseado em bases do reais. De acordo com os proprietários dos dados:
+
+"A avaliação de novas técnicas em conjuntos de dados realistas desempenha um papel crucial na desenvolvimento de pesquisas de **ML** e sua adoção mais ampla pelos profissionais. Em recente anos, houve um aumento significativo de dados não estruturados disponíveis."
+
+"No entanto, dados tabulares que são predominante em muitos domínios de alto risco tem ficado para trás. Para Preenchendo essa lacuna, apresentamos a Fraude em Conta Bancária (BAF), a primeira pública conjunto de conjuntos de dados tabulares que preservam a privacidade, em grande escala e realistas. A base de dados foi gerada pela aplicação de dados tabulares de última geração, utilizando técnicas em uma detecção de fraude de abertura de conta bancária real anônima."
+
+# Metodologia
+
+Neste trabalho vamos realizar os seguintes passos a fim de estudar o nosso problema e construir um modelo de classificação para discriminar os dados em clientes fraudulentos e não fraudulentos.
+
+* Separação da base em treino e teste (70/30)
+* Análise exploratória utilizando os dados de treino
+* Análise por componentes principais
+* Análise fatorial
+* Validação Cruzada
+* Análise de discriminação
+* Random Forest
+
+# Análise Exploratória
+
+A fim de estudar o que leva uma pessoa ser uma conta propensa a cometer fraudes antes dessa abrir a conta vamos realizar uma análise exploratória nos dados. Primeiramente foi realizado uma limpeza nos dados que pode ser encontrado neste [link](https://github.com/PedroHCAlmeida/detecacao_fraude/limpeza_dados).
+
+## Análise variáveis numéricas
+
+```{r}
+#| eval: false
+splits =  initial_split(fraudes, 0.7, seed = 65, strata = fraude)
+treino = training(splits)
+teste = testing(splits)
+
+treino_numeric = treino |>
+  group_by(fraude) |>
+  select_if(is.numeric) |>
+  pivot_longer(-fraude)
+
+treino_numeric |>
+  ggplot() +
+  aes(value) +
+  geom_histogram() +
+  facet_wrap(~name, scales = "free") +
+  ggthemes::scale_fill_colorblind() +
+  theme(strip.text = element_text(size=10))
+```
+
+
+A fim de estudar o problema, vamos, primeiramente analisar as variáveis numéricas presentes na base de dados.
+
+![Histogramas](hist_treino_numeric.png)
+
+A partir dos histogramas destas variávies, conseguimos perceber que, as variáveis mes, renda, limite_pedido, idade e email_distintos_8w são variáveis ordinais, onde assumem poucos possíveis valores. Nesse sentido, podemos tanto interpretá-las como variáveis numéricas como variáveis categóricas.
+
+No entanto, de acordo com os autores, a variável mês serve apenas como uma estratificação na separação dos dados e por esta razão não vamos utilizá-la nos modelos de discriminação e classificação.
+
+Outro fator que notamos é a concentração alta da transferencia inicial próxima de zero, o que pode prejudicar a discriminação utilizando essa variável, nesse sentido outra variável que iremos analisar é se houve ou não uma transferência inicial.
+
+Agora, vamos analisar as densidades dessas variáveis estratificando pela variável resposta.
+
+```{r}
+#| eval: false
+treino_numeric |>
+  ggplot() +
+  aes(value, fill = fraude) +
+  geom_density(alpha = 0.6) +
+  facet_wrap(~name, scales = "free") +
+  ggthemes::scale_fill_colorblind() +
+  theme(strip.text = element_text(size=10))
+```
+
+
+![Densidade](density_numeric.png)
+
+Pelas densidades, vemos que as variáveis email_nome_similaridade, score_credito e meses_endereco_atual, aparentemente diferem em relação aos dois grupos, contas fraudulentas e não fraudulentas. Nesse sentido, podemos notar que o score e a quantidade de meses no endereço atual apresenta uma distribuição estocasticamente maior no grupo de fraudulentos, fato que não é trivial ao se pensar no problema. Enquanto a similiridade do nome com o email apresenta valores menores para essas contas fraudulentas.
+
+## Análise variáveis categóricas
+
+Agora, vamos analisar as variáveis categóricas, nesse sentido, vamos visuzalizar a proporção de cada categoria destas variáveis.
+
+```{r}
+#| eval: false
+treino_cat = 
+  treino |>
+  mutate(trasferiu = as.factor(transferencia_inicial>0), celular_telefone_invalidos = as.factor(celular_valido==0&telefone_valido==0)) |>
+  mutate_at(vars(emails_distintos_dispositivo_8w, renda, limite_pedido, faixa_idade), as.factor) |>
+  group_by(fraude) |>
+  select_if(is.factor) |>
+  pivot_longer(-fraude)
+
+treino |>
+  mutate(trasferiu = as.factor(transferencia_inicial>0)) |>
+  mutate_at(vars(emails_distintos_dispositivo_8w, renda, limite_pedido, faixa_idade), as.factor) |>
+  group_by(fraude) |>
+  select_if(is.factor) |>
+  pivot_longer(everything()) |>
+  count(name, value) |>
+  group_by(name) |>
+  group_modify(~.x |> mutate(prop = round(100*n/sum(n), 1))) |>
+  mutate(label = glue::glue("{prop}%")) |>
+  ggplot() +
+  aes(value, n, fill = n, label = label) +
+  geom_col() +
+  geom_label(fill = "white", color = "black") +
+  facet_wrap(~name, scales = "free", ncol = 3) +
+  theme(strip.text = element_text(size=25))
+```
+
+
+![Categoricas](g_cat_col.png)
+
+A partir do gráfico, temos as seguintes informações:
+
+-   nenhuma observação possui aplicativo fraudulento identificado
+-   11% não possuem celular válido
+-   proporção de email gratuitos é bem balanceada, com 47%
+-   96,8% possuem apenas um email no dispositivo
+-   idade apresenta assimetria a direita, com sua moda entre 30 e 40 anos
+-   99.3% dos pedidos vem de pedidos da internet
+-   1.1% das observações são fraudulentas, problema de desbalanceamento
+-   limite pedido apresenta uma alta concentração em 200
+-   97.5% dos pedidos são da mesma nacionalidade do banco
+-   57.7% dos usuários permaneceram na sessão
+-   77.7% não possuem outros cartões (novos cliente)
+-   renda possui concentrações nos extremos
+-   sistema operacional está bem divido em linux, outros e windows
+-   situação profissional possui alta concentração na categoria CA(73%), lembrando que essa categoria é anonimizada
+-   status da casa está bem dividida com maiores proporções nas classes BA(17%), BE(17%), BB(26%) e BC(37%)
+-   41.7% possuem telefone válido
+-   tipo de pagamento está bem dividido entre as classes AA, AB, AC e AD
+-   25.7% realizaram uma trasferência inicial
+
+Analisando essas variávies, surgiu uma hipótese para investigar quando tanto o celular e o telefone são inválidos, dessa forma esta foi calculada e inserida na base de dados.
+
+Posteriormente, foram analisadas as proporções de contas fraudulentas em cada classe, tendo como base a proporção total da base de treino, que é de 1.1% de fraudes.
+
+```{r}
+#| eval: false
+treino_cat |>
+  count(name, value, fraude) |>
+  group_by(name, value) |>
+  group_modify(~.x |> mutate(prop = round(100*n/sum(n), 1))) |>
+  mutate(label = glue::glue("{n} ({prop}%)")) |>
+  ggplot() +
+  aes(fraude, value, fill = n, label = label) +
+  geom_tile() +
+  geom_label(fill = "white", color = "black") +
+  facet_wrap(~name, scales = "free", ncol = 3) +
+  theme(strip.text = element_text(size=10))
+```
+
+
+![Categoricas Fraude](g_cat.png)
+
+A partir do gráfico podemos tirar algumas conclusões e gerar algumas hipóteses sobre a chance de uma conta ser fraudulenta. São nossas hipóteses.
+
+-   contas com limite pedido acima de 1500 possuem mais chance
+-   contas com limite pedido abaixo de 300 possuem menos chance
+-   clientes acima dos 60 anos são mais propensos a fraudes
+-   clientes abaixo dos 30 são menos propensos a fraudes
+-   celular e telefone inválidos possuem maior chance
+-   pedidos estrangeiros possuem maior chance
+-   o usuário ter permanecido na sessão diminui suas chances
+-   novos clientes(sem cartão) são mais propensos a serem fraudulentos
+-   renda informada muito elevada possui maior chance
+-   windows apresenta maior chance
+-   usuários com situação profissional CC possuem mais chances
+-   status da casa como BA são mais propensos a fraudes
+-   tipos de pagamento AA ou AE são menos propensos a fraudes
+-   clientes que fizeram transferência inicial são menos propensos a fraudes
+
+# Análise por componentes principais
+
+A fim de analisar esses dados de forma multivariada, e, identificar o comportamento multivariado vamos realizar uma análise de componentes principais. Nesse sentido, vamos considerar apenas as variáveis numéricas, desconsiderando aquelas ordinais que identificamos no início deste estudo.
+
+```{r}
+#| include: false
+#| echo: false
+load("trabalho_16_07.RData")
+```
+
+
+```{r}
+pca = 
+  training(splits) |>
+  dplyr::select(
+    -mes, 
+    -limite_pedido, 
+    -renda,
+    -emails_distintos_dispositivo_8w,
+    -faixa_idade
+  ) |>
+  dplyr::select_if(is.numeric) |>
+  cor() |>
+  eigen()
+
+plot(pca$values)
+```
+
+Analisando o scree plot dos autovalores da matriz de correlação, vemos que o primeiro componente carrega a maior variabilidade, no entanto os seguintes possuem valores medianos e nenhum dos 14 autovalores é perto de 0.
+
+```{r}
+cumsum(pca$values)/sum(pca$values)
+```
+
+Analisando a proporção acumulada dos autovalores vemos que apenas com 10 componentes a proporção ultrapassa 80% da variabilidade. Nesse sentido, o método não está conseguindo reduzir a dimensionalidade do nosso problema. Por outro lado, a fim de verificar se existem valores atípicos e se existem agrupamentos claros nos dados, vamos analiar os 3 primeiros componentes estratificado se a conta é fraudulenta.
+
+```{r}
+
+```
+
+
+![PCA](pca_1_2_fraude.png)
+
+Pelos gráficos de dispersão, não identificamos um padrão claro, e, não conseguimos encontrar valores atípicos e presença de agrupamentos.
+
+# Análise fatorial
+
+A fim de tentar reduzir a dimensionalidade dos dados, vamos realizar uma análise fatorial. Dessa forma, vamos testar de 2 a 7 fatores e analisar a recomposição da matriz de correlação.
+
+```{r}
+fas = 2:7 |>
+  purrr::map(
+    ~training(splits) |> 
+    dplyr::select(
+      -mes, 
+      -emails_distintos_dispositivo_8w
+      ) |>
+    dplyr::mutate_at(
+      dplyr::vars(renda, faixa_idade, limite_pedido),
+      as.numeric
+    ) |>
+    dplyr::select_if(is.numeric) |>
+    factanal(factors = ., rotation = "none")
+  ) |>
+  setNames(paste0("f=", 2:7))
+
+res = fas |> 
+  purrr::map(
+    ~sum((.x$correlation-(.x$loadings%*%t(.x$loadings)+diag(.x$uniquenesses)))**2)
+  )
+
+res
+```
+
+A partir da soma ao quadrado dos resíduos da recomposição da matriz de correlação, vemos que o modelo com 5 fatores já possui um valor muito inferior aos modelos com menos fatores. Por outro lado após isso, não vemos uma melhora significativa ao aumentar mais o número de fatores. Dessa forma, vamos analisar os resultados do modelo de dois fatores.
+
+```{r}
+fa_5 = 
+  training(splits) |> 
+  dplyr::select(
+    -mes, 
+    -emails_distintos_dispositivo_8w
+    ) |>
+  dplyr::mutate_at(
+    dplyr::vars(renda, faixa_idade, limite_pedido),
+    as.numeric
+  ) |>
+  dplyr::select_if(is.numeric) |>
+  factanal(factors = 5, rotation = "none")
+
+fa_5
+```
+
+A partir do resultado do modelo fatorial sem rotação não conseguimos interpretar bem esses fatores. Nesse sentido, vamos realizar uma rotação a fim de melhorar a interpretação.
+
+```{r}
+fa_5_varimax = 
+  training(splits) |> 
+  dplyr::select(
+    -mes, 
+    -emails_distintos_dispositivo_8w
+    ) |>
+  dplyr::mutate_at(
+    dplyr::vars(renda, faixa_idade, limite_pedido),
+    as.numeric
+  ) |>
+  dplyr::select_if(is.numeric) |>
+  factanal(factors = 5, rotation = "varimax", scores = "regression")
+
+fa_5_varimax
+```
+
+Nota-se que, utilizando os 5 fatores, aparentemente, temos as seguinte interpretações:
+
+-   Fator 1: associado a data do pedido, onde existe uma alta correlação com as variáveis das médias das aplicações recebidas pelo banco
+
+-   Fator 2: associado ao crédito do cliente, com uma correlação alta com o escore de crédito do cliente e o limite solicitado
+
+-   Fator 3: associado a idade do cliente, correlacionado positivamente com a quantidade de email com mesmo nascimento nas últimas 4 semanas e a faixa de idade
+
+Além dos 3 fatores, os 4 e 5 fatores não apresentam uma boa interpretação, onde apresentam correlações médias com várias variáveis.
+
+Vamos avaliar a distribuição destes fatores em cada grupo da variável resposta, se a conta é fraudulenta ou não.
+
+```{r}
+scores = 
+ fa_5_varimax$scores |>
+ data.frame(fraude = training(splits)$fraude) 
+ 
+scores |>
+ tidyr::pivot_longer(-fraude) |>
+ ggplot2::ggplot() +
+ ggplot2::aes(fraude, value, fill = fraude) +
+ ggplot2::facet_wrap(~name) +
+ ggplot2::geom_boxplot() +
+ ggthemes::scale_fill_colorblind()
+```
+
+A partir dos boxplots, vemos que o único fator que apresenta uma grande diferença em relação a variável resposta é o fator dois, aquele altamente correlacionado ao escore e ao limite pedido.
+
+De forma geral, o modelo fatorial não foi satisfatório e não captou bem a variabilidade dos dados e não obtemos uma boa interpretação dos fatores encontrados.
+
+# Validação cruzada
+
+A fim de encontrar o modelo que generealiza da melhor forma o nosso problema, será aplicada uma validação cruzada. Nesse sentido, os dados de treino serão separados em 5 grupos, cada passo da validação o modelo será treinado por 3 grupos e o grupo restante será utilizado a fim de estimar a área abaixo da curva ROC.
+
+# Análise de Discriminação
+
+Uma vez que, o nosso problema é conseguir separar aqueles clientes que serão fraudulentos daqueles clientes honestos. Vamos realizar uma análise de discrimante, nesse sentido vamos aplicar a análise de discrimante linear de Fisher.
+
+Como foi visto na análise exploratória, temos variáveis ordinais na nossa base de dados que podem ser utilizadas como variáveis numéricas ou nominais, dessa forma, vamos testar utilizando as duas formas, como númericas e como variáveis dummy.
+
+Além disso, os seguintes passos serão executados utilizando a base treino e, posteriormente, aplicando na base de teste:
+
+-   Remoção de variáveis com variância zero
+-   Criação de variáveis dummy
+-   Padranização das variáveis
+
+```{r}
+val_sets = rsample::vfold_cv(training(splits), v = 5, strata = fraude, seed = 123)
+
+cols_rm = c("mes")
+rec_categorica = 
+  recipes::recipe(fraude~., training(splits)) |>
+  recipes::step_zv(recipes::all_predictors()) |>
+   recipes::step_mutate(
+    celular_telefone_invalidos = as.factor(celular_valido==0&telefone_valido==0)
+  ) |>
+  recipes::step_rm(c(cols_rm, "celular_valido", "telefone_valido")) |>
+  recipes::step_dummy(all_nominal_predictors()) |>
+  recipes::step_normalize(recipes::all_predictors()) 
+
+rec_numerica = 
+  recipes::recipe(fraude~., training(splits)) |>
+  recipes::step_mutate_at(
+    c(faixa_idade, limite_pedido, renda),
+    fn = as.numeric
+  ) |>
+  recipes::step_mutate(
+    celular_telefone_invalidos = as.factor(celular_valido==0&telefone_valido==0)
+  ) |>
+  recipes::step_zv(recipes::all_predictors()) |>
+  recipes::step_rm(c(cols_rm)) |>
+  recipes::step_dummy(all_nominal_predictors()) |>
+  recipes::step_normalize(recipes::all_predictors())
+```
+
+```{r}
+lda_mod = 
+  parsnip::discrim_linear() |>
+  parsnip::set_engine("MASS")
+
+lda_workflows = 
+  workflowsets::workflow_set(
+    preproc = list(
+      numericas = rec_numerica,
+      categoricas = rec_categorica
+      ),
+    models = list("lda" = lda_mod)
+  )
+
+lda_fit = 
+  lda_workflows |>
+  workflowsets::workflow_map(
+    fn = "fit_resamples",
+    resamples = val_sets
+  )
+
+lda_metrics = 
+  lda_fit |>
+  workflowsets::collect_metrics()
+```
+
+```{r}
+lda_metrics
+```
+
+A partir do resultado, não vemos uma melhora significativa que justifiquem estimar uma maior quantidade de parâmetros, dado que as métricas de acurácia e área abaixo da curva foram muito próximas. Nesse sentido, vamos utilizar o modelo com as variáveis numéricas, treinar com toda a base de treino e testar com a base de teste definida no começo do trabalho.
+
+```{r}
+#| eval: false
+workflow_lda = 
+  lda_fit |>
+  workflowsets::extract_workflow("numericas_lda")
+
+last_fit_lda = 
+  workflow_lda |>
+  tune::last_fit(splits)
+```
+
+```{r}
+last_fit_lda |>
+  tune::collect_metrics()
+```
+
+Como podemos verificar, tivemos um resultado muito semelhante da média da validação cruzada, onde a AUC ROC foi de 0.861. Vamos interpretar os resultados do modelo final.
+
+```{r}
+last_fit_lda |>
+  workflows::extract_fit_engine()
+```
+
+A partir dos coeficientes da discriminação linear, vemos que as váriaveis renda, limite pedido, faixa idade tiveram um peso positivo, enquanto variáveis como similaridade email-nome,
+
+```{r}
+pred_teste = 
+  last_fit_lda |>
+  workflows::extract_fit_engine() |>
+  predict(testing(splits))
+
+pred_teste
+```
+
+# Classificação
+
+## Random Forest
+
+Random Forest é um modelo de aprendizado de máquina que combina várias árvores de decisão para fazer previsões. Cada árvore de decisão é construída a partir de uma amostra aleatória dos dados de treinamento, com reposição, e utiliza um subconjunto aleatório de recursos para realizar as divisões em cada nó.
+
+O processo de construção de uma Random Forest envolve os seguintes passos:
+
+1.  Amostragem: Uma amostra aleatória é extraída dos dados de treinamento com reposição
+
+2.  Construção da árvore: Para cada árvore na floresta, uma árvore de decisão é construída usando a amostra. Durante a construção da árvore, em cada nó, um subconjunto aleatório de recursos é selecionado e utilizado para determinar a melhor divisão dos dados.
+
+3.  Votação: Para fazer previsões, cada árvore na floresta vota em uma classe ou fornece uma saída numérica. No caso da classificação, que será o nosso caso, a classe mais frequente é escolhida como a previsão final.
+
+A principal ideia por trás do Random Forest é que a combinação de várias árvores de decisão reduz a variância e o overfitting, enquanto mantém um bom poder de generalização. Além disso, a amostragem aleatória dos dados e recursos ajuda a evitar o viés e a criar modelos mais robustos.
+
+No entanto, esse método é sensível aos parâmetros dessa amostragem e da árvore de decisão. Esses parâmetros são:
+
+-   **trees**: O número de árvores na floresta. Quanto maior o número de árvores, mais complexo o modelo se torna, aumentando a capacidade de capturar padrões nos dados, mas também aumentando o tempo de treinamento.
+
+-   **mtry**: O número de variáveis selecionadas aleatoriamente em cada nó para considerar na divisão. Um valor comumente usado é a raiz quadrada do número total de variáveis.
+
+-   **min_n**: O número mínimo de observações em um nó para permitir a divisão. Se o número de observações for menor que **`min_n`**, o nó não será dividido adicionalmente.
+
+-   **minprop**: A proporção mínima de observações em um nó para permitir a divisão. Por exemplo, se **`minprop`** for definido como 0,1, um nó deve ter pelo menos 10% das observações totais para ser dividido.
+
+-   **sample_size**: O tamanho da amostra usado para treinar cada árvore. Pode ser um número absoluto ou uma porcentagem do tamanho total do conjunto de dados
+
+Além disso, como se trata de um processo aleatório, podemos definir uma semente a fim de reproducibilidade.
+
+A fim de encontrar os parâmetros do modelo de árvore aleatória que maximizam a área abaixo da curva ROC, ou seja, que maximizam a separação dos dois grupos em termos das probabilidades, vamos utilizar a validação cruzada.
+
+Dessa forma, esse processo consta em 5 modelos diferentes, onde em cada modelo um grupo será deixado para teste. Além disso, esses 5 modelos serão ajustados para cada grid de parâmetros definidos aleatoriamente, aqueles parâmetros, que, em média, obterem a melhor métrica será o modelo escolhido.
+
+Nesse contexto, vamos fixar o número de árvores em 1000, e, utilizar o pacote `tune` a fim de testar para cada combinação da validação cruzada otimizando os parâmetros `mtry` e `min_n`. Além disso, pelo alto tempo de execução, e, a quantidade de modelos que precisam ser estimados, vamos aplicar uma amostragem a fim de balancear as classes, onde o grupo não fraudulento foi diminuido a partir de uma amostra de forma que a quantidade seja o dobro do tamanho do grupo fraudulento.
+
+```{r}
+#| eval: false
+rec_numerica_downsample = 
+  rec_numerica |>
+  themis::step_downsample(fraude, under_ratio = 2)
+
+cores = parallel::detectCores()
+rf_mod = 
+  rand_forest(mtry = tune(), min_n = tune(), trees = 1000) %>% 
+  set_engine("ranger", num.threads = cores, seed = 654) %>% 
+  set_mode("classification")
+
+workflows = 
+  workflowsets::workflow_set(
+    preproc = list(
+      rec_numerica_downsample
+    ),
+    models = list("lda" = lda_mod, "rf" = rf_mod)
+  )
+
+fit = 
+  workflows |>
+  workflowsets::workflow_map(
+    fn = "tune_grid",
+    resamples = val_sets,
+    grid = 10,
+    control = tune::control_grid(verbose = TRUE)
+  )
+
+fit |> 
+  autoplot()
+```
+
+A partir 
+
+```{r}
+fit |>
+  workflowsets::collect_metrics()
+```
+
+```{r}
+#| eval: false
+workflow_lda = 
+  fit |>
+  tune::select_best() |>
+  workflowsets::extract_workflow()
+
+last_fit_lda = 
+  workflow_lda |>
+  tune::last_fit(splits)
+```
+
+```{r}
+last_fit_lda |>
+  tune::collect_metrics()
+```
+
+# Conclusão
+
+# Bibliografia
